@@ -1,6 +1,6 @@
 """
 실시간 아크 감지 시각화 웹 애플리케이션
-- Flask + WebSocket을 사용한 실시간 데이터 스트리밍
+- Flask + REST API를 사용한 실시간 데이터 스트리밍
 - 1초마다 아크 확률 예측 및 파형 시각화
 """
 
@@ -8,6 +8,7 @@ from flask import Flask, render_template, jsonify, request
 import threading
 import json
 import time
+import os
 from datetime import datetime
 from collections import deque
 import numpy as np
@@ -22,6 +23,7 @@ model = None
 simulator = None
 processor = None
 is_running = False
+initialized = False
 
 # 실시간 데이터 저장
 latest_data = {
@@ -35,16 +37,31 @@ latest_data = {
 # 히스토리 데이터 (최근 60초)
 history_data = deque(maxlen=60)
 
+def get_model_path():
+    """모델 파일 경로 반환 (상대 경로 사용)"""
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    return os.path.join(base_dir, 'arc_model.pkl')
+
 def initialize():
     """모델 및 시뮬레이터 초기화"""
-    global model, simulator, processor
+    global model, simulator, processor, initialized
+    
+    if initialized:
+        return
+    
+    print("시스템 초기화 중...")
     
     # 모델 로드
     model = ArcDetectionModel(sampling_rate=35)
-    if not model.load_model('/home/ubuntu/arc_detection/arc_model.pkl'):
+    model_path = get_model_path()
+    
+    if os.path.exists(model_path):
+        print(f"모델 로드 중: {model_path}")
+        model.load_model(model_path)
+    else:
         print("모델 파일이 없습니다. 새로 학습합니다...")
         model.train()
-        model.save_model('/home/ubuntu/arc_detection/arc_model.pkl')
+        model.save_model(model_path)
     
     # 프로세서 생성
     processor = RealTimeDataProcessor(model, sampling_rate=35)
@@ -69,6 +86,13 @@ def initialize():
     
     processor.on_prediction_callback = on_prediction
     simulator.on_window_callback = lambda data, ts: processor.process_window(data, ts)
+    
+    initialized = True
+    print("시스템 초기화 완료!")
+
+# 앱 시작 시 초기화 (Gunicorn 호환)
+with app.app_context():
+    initialize()
 
 @app.route('/')
 def index():
@@ -79,6 +103,10 @@ def index():
 def start_monitoring():
     """모니터링 시작"""
     global is_running, latest_data
+    
+    # 초기화 확인
+    if not initialized:
+        initialize()
     
     if not is_running:
         mode = request.json.get('mode', 'random') if request.json else 'random'
@@ -135,16 +163,14 @@ def get_status():
     return jsonify({
         'is_running': is_running,
         'mode': simulator.mode if simulator else None,
-        'sampling_rate': simulator.sampling_rate if simulator else None
+        'sampling_rate': simulator.sampling_rate if simulator else None,
+        'initialized': initialized
     })
 
 if __name__ == '__main__':
     print("=" * 50)
     print("아크 감지 실시간 모니터링 시스템")
     print("=" * 50)
-    
-    # 초기화
-    initialize()
     
     # 서버 시작
     print("\n웹 서버 시작: http://localhost:5000")
